@@ -9,7 +9,8 @@ import MessageActions from "../MessageActions";
 import { EmojiPicker, ForwardModal, ReplyQuote } from "../ChatFeatures";
 
 const MAX_IMAGE_SIZE = 8 * 1024 * 1024;
-const ALLOWED_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+const MAX_VIDEO_SIZE = 50 * 1024 * 1024;
+const ALLOWED_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp", "video/mp4", "video/webm"]);
 
 function timeLabel(iso) {
   return new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(new Date(iso));
@@ -153,11 +154,12 @@ export default function ChatPage() {
   const selectImage = (selected) => {
     if (!selected) return;
     if (!ALLOWED_TYPES.has(selected.type)) {
-      setToast({ message: "Choose a PNG, JPEG, GIF, or WebP image" });
+      setToast({ message: "Choose a PNG, JPEG, GIF, WebP, MP4, or WebM file" });
       return;
     }
-    if (selected.size > MAX_IMAGE_SIZE) {
-      setToast({ message: "Images must be 8 MB or smaller" });
+    const sizeLimit = selected.type.startsWith("video/") ? MAX_VIDEO_SIZE : MAX_IMAGE_SIZE;
+    if (selected.size > sizeLimit) {
+      setToast({ message: `${selected.type.startsWith("video/") ? "Videos" : "Images"} must be ${sizeLimit / 1024 / 1024} MB or smaller` });
       return;
     }
     if (imagePreview) URL.revokeObjectURL(imagePreview);
@@ -211,7 +213,7 @@ export default function ChatPage() {
       form.append("caption", content);
       if (replyingTo) form.append("reply_to_id", String(replyingTo.id));
       try {
-        const data = await api(`/api/chats/${encodeURIComponent(contactId)}/images`, { method: "POST", body: form });
+        const data = await api(`/api/chats/${encodeURIComponent(contactId)}/media`, { method: "POST", body: form });
         addMessage(data.message);
         setText("");
         setReplyingTo(null);
@@ -263,6 +265,7 @@ export default function ChatPage() {
                 {message.forwarded && <span className="forwarded-label">Forwarded</span>}
                 <ReplyQuote reply={message.reply_to} />
                 {message.kind === "image" && <button className="message-image" onClick={() => setLightbox(message)} aria-label={`Open ${message.original_filename || "image"}`}><img src={message.image_url} alt={message.content || "Shared image"} loading="lazy" /></button>}
+                {message.kind === "video" && <video className="message-video" src={message.media_url} controls preload="metadata" aria-label={message.original_filename || "Shared video"} />}
                 {message.kind === "deleted" ? <p className="deleted-message">Message deleted</p> : message.content && <p>{message.content}</p>}
                 {message.edited && <small>Edited</small>}
                 <MessageActions message={message} scope="private" canModify={message.sender_id === user.public_id} onReply={startReply} onForward={setForwarding} onUpdate={updated => setMessages(items => items.map(item => item.id === updated.id ? updated : item))} />
@@ -275,11 +278,11 @@ export default function ChatPage() {
         </div>
 
         {replyingTo && <ReplyQuote reply={replyingTo} composing onClose={() => setReplyingTo(null)} />}
-        {imagePreview && <div className="composer-preview"><img src={imagePreview} alt="Ready to send" /><div><strong>{image.name}</strong><small>{(image.size / 1024 / 1024).toFixed(1)} MB · Add a caption below</small></div><button className="icon-button" onClick={clearImage} aria-label="Remove image"><X size={18} /></button></div>}
+        {imagePreview && <div className="composer-preview">{image.type.startsWith("video/") ? <video src={imagePreview} muted /> : <img src={imagePreview} alt="Ready to send" />}<div><strong>{image.name}</strong><small>{(image.size / 1024 / 1024).toFixed(1)} MB · Add a caption below</small></div><button className="icon-button" onClick={clearImage} aria-label="Remove attachment"><X size={18} /></button></div>}
 
         <form className="message-composer" onSubmit={submit}>
-          <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/gif,image/webp" onChange={chooseImage} hidden />
-          <button type="button" className="icon-button composer-action" disabled={disconnected} onClick={() => fileRef.current?.click()} aria-label="Attach image"><ImagePlus size={21} /></button>
+          <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/gif,image/webp,video/mp4,video/webm" onChange={chooseImage} hidden />
+          <button type="button" className="icon-button composer-action" disabled={disconnected} onClick={() => fileRef.current?.click()} aria-label="Attach photo or video"><ImagePlus size={21} /></button>
           <div className="message-input-shell"><textarea ref={textRef} value={text} onChange={changeText} onPaste={pasteImage} onBlur={stopTyping} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); event.currentTarget.form.requestSubmit(); } }} placeholder={disconnected ? "Reconnect to send messages" : image ? "Add a caption…" : "Write a message or paste a screenshot…"} rows="1" maxLength={image ? 1000 : 4000} disabled={disconnected} /><EmojiPicker className="composer-emoji-picker" onSelect={addEmoji} /></div>
           <button className="send-button" disabled={disconnected || sendingImage || (!text.trim() && !image)} aria-label="Send message">{sendingImage ? <LoaderCircle className="spin" size={20} /> : <Send size={20} />}</button>
         </form>

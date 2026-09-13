@@ -452,3 +452,90 @@ def test_lan_link_prefers_the_active_route(monkeypatch, capsys):
     output = capsys.readouterr().out
     assert "http://192.168.43.27:8080" in output
     assert "<-- copy this" in output
+
+
+def test_passwords_are_argon2id_hashed(tmp_path):
+    application = load_test_app(tmp_path)
+    module = sys.modules["app.main"]
+    with TestClient(application) as client:
+        response = client.post(
+            "/api/register",
+            json={"name": "Alice", "username": "alice", "password": "password1"},
+        )
+        assert response.status_code == 201
+        with module.SessionLocal() as db:
+            user = db.scalar(module.select(module.User).where(module.User.username == "alice"))
+            assert user.password_salt == "argon2id"
+            assert user.password_hash.startswith("$argon2id$")
+            assert "password1" not in user.password_hash
+
+
+def test_mp4_upload_is_stored_and_served_as_video(tmp_path):
+    application = load_test_app(tmp_path)
+    module = sys.modules["app.main"]
+    with TestClient(application) as alice, TestClient(application) as bob:
+        alice_user = alice.post(
+            "/api/register",
+            json={"name": "Alice", "username": "alice", "password": "password1"},
+        ).json()["user"]
+        bob_user = bob.post(
+            "/api/register",
+            json={"name": "Bob", "username": "bob", "password": "password1"},
+        ).json()["user"]
+        with module.SessionLocal() as db:
+            alice_row = db.scalar(module.select(module.User).where(module.User.public_id == alice_user["public_id"]))
+            bob_row = db.scalar(module.select(module.User).where(module.User.public_id == bob_user["public_id"]))
+            db.add(module.Connection(user_low_id=alice_row.id, user_high_id=bob_row.id))
+            db.commit()
+
+        tiny_mp4 = b"\x00\x00\x00\x18ftypisom\x00\x00\x02\x00isomiso2"
+        sent = alice.post(
+            f"/api/chats/{bob_user['public_id']}/media",
+            files={"image": ("clip.mp4", tiny_mp4, "video/mp4")},
+            data={"caption": "Tiny clip"},
+        )
+        assert sent.status_code == 201
+        message = sent.json()["message"]
+        assert message["kind"] == "video"
+        assert message["media_url"].startswith("/api/media/")
+        assert "image_url" not in message
+        media = bob.get(message["media_url"])
+        assert media.status_code == 200
+        assert media.headers["content-type"] == "video/mp4"
+        assert media.content == tiny_mp4
+
+
+def test_s3_storage_uses_role_client_and_server_side_encryption(tmp_path, monkeypatch):
+    storage = importlib.import_module("app.storage")
+
+    class FakeS3:
+        def __init__(self):
+            self.calls = []
+
+        def put_object(self, **kwargs):
+            self.calls.append(("put", kwargs))
+
+        def copy_object(self, **kwargs):
+            self.calls.append(("copy", kwargs))
+
+        def delete_object(self, **kwargs):
+            self.calls.append(("delete", kwargs))
+
+    fake = FakeS3()
+    monkeypatch.setattr(storage.settings, "MEDIA_BACKEND", "s3")
+    monkeypatch.setattr(storage.settings, "S3_BUCKET", "private-chat-media")
+    monkeypatch.setattr(storage.settings, "S3_KMS_KEY_ID", "")
+    monkeypatch.setattr(storage, "_s3_client", lambda: fake)
+
+    key = storage.put_media(b"image", ".png", "image/png", "messages", tmp_path)
+    copied = storage.copy_media(key, "image/png", "group-messages", tmp_path)
+    storage.delete_media(copied, tmp_path)
+
+    assert key.startswith("messages/")
+    assert copied.startswith("group-messages/")
+    assert fake.calls[0][1]["ServerSideEncryption"] == "AES256"
+    assert fake.calls[1][1]["CopySource"] == {
+        "Bucket": "private-chat-media",
+        "Key": key,
+    }
+    assert fake.calls[2][1] == {"Bucket": "private-chat-media", "Key": copied}

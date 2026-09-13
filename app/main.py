@@ -31,6 +31,7 @@ from .auth import (
     delete_session,
     get_current_user,
     hash_password,
+    password_needs_rehash,
     user_from_token,
     verify_password,
 )
@@ -47,6 +48,9 @@ from .models import (
     User,
 )
 from .network import print_lan_banner
+from . import settings
+from .security import SecurityMiddleware, websocket_origin_allowed
+from .storage import delete_media, delivery_url, put_media
 from .schemas import (
     ConnectionRequestInput,
     GroupCreateInput,
@@ -61,7 +65,8 @@ BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 FRONTEND_DIR = BASE_DIR / "frontend_dist"
 UPLOAD_DIR = BASE_DIR.parent / "uploads"
-MAX_IMAGE_BYTES = 8 * 1024 * 1024
+MAX_IMAGE_BYTES = settings.MAX_IMAGE_BYTES
+MAX_VIDEO_BYTES = settings.MAX_VIDEO_BYTES
 
 
 def upgrade_message_table() -> None:
@@ -91,8 +96,20 @@ def image_format(data: bytes) -> tuple[str, str] | None:
     return None
 
 
+def media_format(data: bytes) -> tuple[str, str] | None:
+    image = image_format(data)
+    if image:
+        return image
+    if len(data) >= 12 and data[4:8] == b"ftyp":
+        return "video/mp4", ".mp4"
+    if data.startswith(b"\x1aE\xdf\xa3"):
+        return "video/webm", ".webm"
+    return None
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    settings.validate_production_settings()
     Base.metadata.create_all(bind=engine)
     upgrade_message_table()
     with engine.begin() as connection:
@@ -120,15 +137,24 @@ async def lifespan(_: FastAPI):
                 if name not in columns:
                     connection.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {sql_type}"))
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    try:
-        display_port = int(os.getenv("LAN_CHAT_PORT", "8000"))
-    except ValueError:
-        display_port = 8000
-    print_lan_banner(display_port)
+    if not settings.IS_PRODUCTION:
+        try:
+            display_port = int(os.getenv("LAN_CHAT_PORT", "8000"))
+        except ValueError:
+            display_port = 8000
+        print_lan_banner(display_port)
     yield
 
 
-app = FastAPI(title="LAN Chat", version="1.0.0", lifespan=lifespan)
+app = FastAPI(
+    title="LAN Chat",
+    version="1.0.0",
+    lifespan=lifespan,
+    docs_url=None if settings.IS_PRODUCTION else "/docs",
+    redoc_url=None if settings.IS_PRODUCTION else "/redoc",
+    openapi_url=None if settings.IS_PRODUCTION else "/openapi.json",
+)
+app.add_middleware(SecurityMiddleware)
 
 
 class ConnectionManager:
@@ -230,8 +256,10 @@ def message_json(
     if db:
         payload["reply_to"] = reply_json(db, Message, message.reply_to_id)
         payload["reactions"] = reaction_json(db, MessageReaction, message.id)
-    if message.kind == "image":
-        payload["image_url"] = f"/api/media/{message.id}"
+    if message.kind in {"image", "video"}:
+        payload["media_url"] = f"/api/media/{message.id}"
+        if message.kind == "image":
+            payload["image_url"] = payload["media_url"]
         payload["original_filename"] = message.original_filename
     return payload
 
@@ -253,8 +281,10 @@ def group_message_json(
     if db:
         payload["reply_to"] = reply_json(db, GroupMessage, message.reply_to_id)
         payload["reactions"] = reaction_json(db, GroupMessageReaction, message.id)
-    if message.kind == "image":
-        payload["image_url"] = f"/api/group-media/{message.id}"
+    if message.kind in {"image", "video"}:
+        payload["media_url"] = f"/api/group-media/{message.id}"
+        if message.kind == "image":
+            payload["image_url"] = payload["media_url"]
         payload["original_filename"] = message.original_filename
     return payload
 
@@ -383,6 +413,11 @@ def root() -> RedirectResponse:
     return RedirectResponse("/login")
 
 
+@app.get("/healthz", include_in_schema=False)
+def healthcheck() -> dict:
+    return {"status": "ok"}
+
+
 @app.get("/login", include_in_schema=False)
 def login_page() -> FileResponse:
     return frontend_index()
@@ -449,6 +484,8 @@ def login(payload: LoginInput, response: Response, db: Session = Depends(get_db)
     user = db.scalar(select(User).where(User.username == payload.username.strip().lower()))
     if not user or not verify_password(payload.password, user.password_salt, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid username or password")
+    if password_needs_rehash(user.password_hash):
+        user.password_salt, user.password_hash = hash_password(payload.password)
     create_session(db, user.id, response)
     return {"user": user_json(user)}
 
@@ -856,7 +893,8 @@ async def mark_chat_read(
     return {"read_message_ids": message_ids, "read_at": read_at.isoformat()}
 
 
-@app.post("/api/chats/{contact_public_id}/images", status_code=201)
+@app.post("/api/chats/{contact_public_id}/media", status_code=201)
+@app.post("/api/chats/{contact_public_id}/images", status_code=201, include_in_schema=False)
 async def send_image(
     contact_public_id: str,
     image: UploadFile = File(...),
@@ -873,27 +911,29 @@ async def send_image(
     ):
         raise HTTPException(status_code=400, detail="Reply message is not in this chat")
 
-    data = await image.read(MAX_IMAGE_BYTES + 1)
-    if len(data) > MAX_IMAGE_BYTES:
-        raise HTTPException(status_code=413, detail="Images must be 8 MB or smaller")
-    detected = image_format(data)
+    data = await image.read(MAX_VIDEO_BYTES + 1)
+    detected = media_format(data)
     if not detected:
         raise HTTPException(
             status_code=415,
-            detail="Use a PNG, JPEG, GIF, or WebP image",
+            detail="Use a PNG, JPEG, GIF, WebP, MP4, or WebM file",
         )
-
     media_mime, extension = detected
-    stored_name = f"{secrets.token_hex(24)}{extension}"
-    stored_path = UPLOAD_DIR / stored_name
+    size_limit = MAX_IMAGE_BYTES if media_mime.startswith("image/") else MAX_VIDEO_BYTES
+    if len(data) > size_limit:
+        label = "Images" if media_mime.startswith("image/") else "Videos"
+        raise HTTPException(
+            status_code=413,
+            detail=f"{label} must be {size_limit // 1024 // 1024} MB or smaller",
+        )
     original_name = (image.filename or f"image{extension}").replace("\\", "/").split("/")[-1]
-    stored_path.write_bytes(data)
+    stored_name = put_media(data, extension, media_mime, "messages", UPLOAD_DIR)
 
     message = Message(
         sender_id=current_user.id,
         receiver_id=contact.id,
         content=caption.strip(),
-        kind="image",
+        kind="image" if media_mime.startswith("image/") else "video",
         media_filename=stored_name,
         media_mime=media_mime,
         original_filename=original_name[:255],
@@ -905,7 +945,7 @@ async def send_image(
         db.refresh(message)
     except Exception:
         db.rollback()
-        stored_path.unlink(missing_ok=True)
+        delete_media(stored_name, UPLOAD_DIR)
         raise
 
     payload = message_json(message, current_user.public_id, contact.public_id, db)
@@ -920,19 +960,21 @@ def get_message_media(
     message_id: int,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> FileResponse:
+):
     message = db.get(Message, message_id)
     if (
         not message
-        or message.kind != "image"
+        or message.kind not in {"image", "video"}
         or current_user.id not in (message.sender_id, message.receiver_id)
         or not message.media_filename
         or not message.media_mime
     ):
-        raise HTTPException(status_code=404, detail="Image not found")
+        raise HTTPException(status_code=404, detail="Media not found")
+    if settings.MEDIA_BACKEND == "s3":
+        return RedirectResponse(delivery_url(message.media_filename), status_code=307)
     path = UPLOAD_DIR / message.media_filename
     if not path.is_file():
-        raise HTTPException(status_code=404, detail="Image file not found")
+        raise HTTPException(status_code=404, detail="Media file not found")
     return FileResponse(
         path,
         media_type=message.media_mime,
@@ -943,7 +985,8 @@ def get_message_media(
     )
 
 
-@app.post("/api/groups/{group_public_id}/images", status_code=201)
+@app.post("/api/groups/{group_public_id}/media", status_code=201)
+@app.post("/api/groups/{group_public_id}/images", status_code=201, include_in_schema=False)
 async def send_group_image(
     group_public_id: str,
     image: UploadFile = File(...),
@@ -960,27 +1003,29 @@ async def send_group_image(
     if reply_to_id and not group_reply_target(db, reply_to_id, group.id):
         raise HTTPException(status_code=400, detail="Reply message is not in this group")
 
-    data = await image.read(MAX_IMAGE_BYTES + 1)
-    if len(data) > MAX_IMAGE_BYTES:
-        raise HTTPException(status_code=413, detail="Images must be 8 MB or smaller")
-    detected = image_format(data)
+    data = await image.read(MAX_VIDEO_BYTES + 1)
+    detected = media_format(data)
     if not detected:
         raise HTTPException(
             status_code=415,
-            detail="Use a PNG, JPEG, GIF, or WebP image",
+            detail="Use a PNG, JPEG, GIF, WebP, MP4, or WebM file",
         )
-
     media_mime, extension = detected
-    stored_name = f"{secrets.token_hex(24)}{extension}"
-    stored_path = UPLOAD_DIR / stored_name
+    size_limit = MAX_IMAGE_BYTES if media_mime.startswith("image/") else MAX_VIDEO_BYTES
+    if len(data) > size_limit:
+        label = "Images" if media_mime.startswith("image/") else "Videos"
+        raise HTTPException(
+            status_code=413,
+            detail=f"{label} must be {size_limit // 1024 // 1024} MB or smaller",
+        )
     original_name = (image.filename or f"image{extension}").replace("\\", "/").split("/")[-1]
-    stored_path.write_bytes(data)
+    stored_name = put_media(data, extension, media_mime, "group-messages", UPLOAD_DIR)
 
     message = GroupMessage(
         group_id=group.id,
         sender_id=current_user.id,
         content=caption.strip(),
-        kind="image",
+        kind="image" if media_mime.startswith("image/") else "video",
         media_filename=stored_name,
         media_mime=media_mime,
         original_filename=original_name[:255],
@@ -992,7 +1037,7 @@ async def send_group_image(
         db.refresh(message)
     except Exception:
         db.rollback()
-        stored_path.unlink(missing_ok=True)
+        delete_media(stored_name, UPLOAD_DIR)
         raise
 
     payload = group_message_json(message, current_user, db)
@@ -1007,19 +1052,21 @@ def get_group_message_media(
     message_id: int,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> FileResponse:
+):
     message = db.get(GroupMessage, message_id)
     if (
         not message
-        or message.kind != "image"
+        or message.kind not in {"image", "video"}
         or not group_membership(db, message.group_id, current_user.id)
         or not message.media_filename
         or not message.media_mime
     ):
-        raise HTTPException(status_code=404, detail="Image not found")
+        raise HTTPException(status_code=404, detail="Media not found")
+    if settings.MEDIA_BACKEND == "s3":
+        return RedirectResponse(delivery_url(message.media_filename), status_code=307)
     path = UPLOAD_DIR / message.media_filename
     if not path.is_file():
-        raise HTTPException(status_code=404, detail="Image file not found")
+        raise HTTPException(status_code=404, detail="Media file not found")
     return FileResponse(
         path,
         media_type=message.media_mime,
@@ -1032,6 +1079,9 @@ def get_group_message_media(
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
+    if not websocket_origin_allowed(websocket.headers.get("origin")):
+        await websocket.close(code=1008, reason="Origin not allowed")
+        return
     with SessionLocal() as db:
         current_user = user_from_token(db, websocket.cookies.get(COOKIE_NAME))
         if not current_user:

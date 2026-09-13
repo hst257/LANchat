@@ -1,10 +1,8 @@
 from datetime import datetime, timezone
-from pathlib import Path
-import secrets
 from typing import Literal
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import and_, delete, or_, select
 from sqlalchemy.orm import Session
@@ -23,6 +21,8 @@ from .models import (
     GroupMessageReaction,
 )
 from . import main
+from . import settings
+from .storage import copy_media, delete_media, delivery_url, put_media
 
 router = APIRouter()
 
@@ -154,13 +154,13 @@ async def change_message(scope, message_id, content, user, db):
         content = content.strip()
         if message.kind == "text" and not content:
             raise HTTPException(422, "Text messages cannot be empty")
-        if message.kind == "image" and len(content) > 1000:
+        if message.kind in {"image", "video"} and len(content) > 1000:
             raise HTTPException(422, "Captions must be 1000 characters or fewer")
         message.content = content
         message.edited_at = datetime.now(timezone.utc)
     db.commit()
     if deleted_media:
-        (main.UPLOAD_DIR / deleted_media).unlink(missing_ok=True)
+        delete_media(deleted_media, main.UPLOAD_DIR)
     payload, recipients, event = updated_payload(scope, message, db)
     for recipient_id in recipients:
         await main.manager.send_to_user(recipient_id, event)
@@ -222,14 +222,18 @@ async def forward_message(
         raise HTTPException(409, "Cannot forward a deleted message")
 
     copied_filename = None
-    if source.kind == "image":
-        if not source.media_filename:
-            raise HTTPException(404, "Image file not found")
-        source_path = main.UPLOAD_DIR / source.media_filename
-        if not source_path.is_file():
-            raise HTTPException(404, "Image file not found")
-        copied_filename = f"{secrets.token_hex(24)}{Path(source.media_filename).suffix}"
-        (main.UPLOAD_DIR / copied_filename).write_bytes(source_path.read_bytes())
+    if source.kind in {"image", "video"}:
+        if not source.media_filename or not source.media_mime:
+            raise HTTPException(404, "Media file not found")
+        try:
+            copied_filename = copy_media(
+                source.media_filename,
+                source.media_mime,
+                "messages" if payload.target_type == "private" else "group-messages",
+                main.UPLOAD_DIR,
+            )
+        except FileNotFoundError:
+            raise HTTPException(404, "Media file not found")
 
     if payload.target_type == "private":
         target = db.scalar(
@@ -237,7 +241,7 @@ async def forward_message(
         )
         if not target or not main.connection_between(db, user.id, target.id):
             if copied_filename:
-                (main.UPLOAD_DIR / copied_filename).unlink(missing_ok=True)
+                delete_media(copied_filename, main.UPLOAD_DIR)
             raise HTTPException(404, "Connection not found")
         forwarded = Message(
             sender_id=user.id,
@@ -257,7 +261,7 @@ async def forward_message(
         )
         if not target or not main.group_membership(db, target.id, user.id):
             if copied_filename:
-                (main.UPLOAD_DIR / copied_filename).unlink(missing_ok=True)
+                delete_media(copied_filename, main.UPLOAD_DIR)
             raise HTTPException(404, "Group not found")
         forwarded = GroupMessage(
             group_id=target.id,
@@ -277,7 +281,7 @@ async def forward_message(
     except Exception:
         db.rollback()
         if copied_filename:
-            (main.UPLOAD_DIR / copied_filename).unlink(missing_ok=True)
+            delete_media(copied_filename, main.UPLOAD_DIR)
         raise
 
     if payload.target_type == "private":
@@ -301,19 +305,17 @@ async def upload_avatar(image: UploadFile = File(...), user: User = Depends(get_
     if not detected:
         raise HTTPException(415, "Use a PNG, JPEG, GIF, or WebP image")
     mime, extension = detected
-    filename = f"avatar-{secrets.token_hex(24)}{extension}"
-    path = main.UPLOAD_DIR / filename
-    path.write_bytes(data)
+    filename = put_media(data, extension, mime, "avatars", main.UPLOAD_DIR)
     old_filename = user.avatar_filename
     user.avatar_filename, user.avatar_mime = filename, mime
     try:
         db.commit()
     except Exception:
         db.rollback()
-        path.unlink(missing_ok=True)
+        delete_media(filename, main.UPLOAD_DIR)
         raise
     if old_filename and old_filename != filename:
-        (main.UPLOAD_DIR / old_filename).unlink(missing_ok=True)
+        delete_media(old_filename, main.UPLOAD_DIR)
     payload = main.user_json(user)
     for recipient_id in list(main.manager.active):
         await main.manager.send_to_user(recipient_id, {"type": "profile_updated", "user": payload})
@@ -380,7 +382,7 @@ async def disconnect_user(public_id: str, user: User = Depends(get_current_user)
     db.delete(connection)
     db.commit()
     for filename in media_files:
-        (main.UPLOAD_DIR / filename).unlink(missing_ok=True)
+        delete_media(filename, main.UPLOAD_DIR)
     await main.manager.send_to_user(
         user.id, {"type": "connection_removed", "public_id": target.public_id}
     )
@@ -395,6 +397,8 @@ def avatar(public_id: str, user: User = Depends(get_current_user), db: Session =
     target = db.scalar(select(User).where(User.public_id == public_id))
     if not target or not target.avatar_filename:
         raise HTTPException(404, "Profile photo not found")
+    if settings.MEDIA_BACKEND == "s3":
+        return RedirectResponse(delivery_url(target.avatar_filename), status_code=307)
     path = main.UPLOAD_DIR / target.avatar_filename
     if not path.is_file():
         raise HTTPException(404, "Profile photo not found")

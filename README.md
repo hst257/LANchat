@@ -1,6 +1,6 @@
 # LAN Chat
 
-A small one-to-one real-time chat prototype for devices on the same Wi-Fi or LAN. One laptop runs FastAPI and PostgreSQL; other devices connect to that laptop over HTTP and WebSocket/TCP.
+A real-time FastAPI and React chat application that can run either on a local LAN or on AWS.
 
 ```text
 Client A/B/C → HTTP + WebSocket/TCP → FastAPI (0.0.0.0:8000) → PostgreSQL
@@ -14,7 +14,7 @@ Client A/B/C → HTTP + WebSocket/TCP → FastAPI (0.0.0.0:8000) → PostgreSQL
 - Accept or reject incoming requests
 - See accepted connections and live online/offline presence
 - Open a private chat, load message history, and exchange messages instantly
-- Send protected PNG, JPEG, GIF, and WebP images up to 8 MB
+- Send protected PNG, JPEG, GIF, and WebP images up to 8 MB, plus MP4/WebM videos up to 50 MB
 - Paste screenshots directly into the private or group chat composer
 - Edit your own text messages and image captions, or delete messages for everyone, in private and group chats
 - Insert emojis, reply with quoted context, forward messages to chats or groups, and add live emoji reactions
@@ -24,7 +24,7 @@ Client A/B/C → HTTP + WebSocket/TCP → FastAPI (0.0.0.0:8000) → PostgreSQL
 - Upload a profile photo using Change photo on the connections page (PNG, JPEG, GIF, or WebP; up to 8 MB)
 - See a live typing indicator while a contact is composing a message
 - Create group chats from accepted connections and add members later as the owner
-- Exchange persistent text and image messages in groups with group typing indicators
+- Exchange persistent text, image, and video messages in groups with group typing indicators
 - Responsive React interface with locally bundled fonts and icons
 - Persist users, sessions, requests, connections, and messages in PostgreSQL
 
@@ -78,7 +78,14 @@ Requirements: Python 3.11+, Node.js 20+, Docker Desktop (or an existing PostgreS
 
 6. Copy the displayed **Other devices** link into a browser on the phone or laptop connected to the same LAN. If Windows Firewall prompts, allow Python on **Private networks** only.
 
-## Notes for this LAN prototype
+## AWS production deployment
+
+The production configuration uses an HTTPS Application Load Balancer, EC2,
+private RDS PostgreSQL, private S3 media storage, CloudFront signed URLs, IAM
+roles, and Secrets Manager. Follow [AWS_DEPLOYMENT.md](AWS_DEPLOYMENT.md) for the
+complete console selections and Amazon Linux commands.
+
+## Notes for local LAN mode
 
 - Use one Uvicorn worker. Online presence and WebSocket routing are held in that process. Scaling to several workers would require a shared pub/sub layer such as Redis.
 - Traffic is plain HTTP/WebSocket on the trusted LAN. Passwords are salted and hashed, but messages are not end-to-end encrypted and network traffic is not TLS-encrypted.

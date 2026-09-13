@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Forward, Image, LoaderCircle, Plus, Reply, Smile, UsersRound, X } from "lucide-react";
+import { Forward, Image, LoaderCircle, Plus, Reply, Smile, UsersRound, Video, X } from "lucide-react";
 import { api } from "./api";
 import { Avatar, EmptyState, Modal } from "./components";
 
@@ -33,11 +33,11 @@ export function EmojiPicker({ onSelect, reactions = false, className = "" }) {
 
 export function ReplyQuote({ reply, composing = false, onClose }) {
   if (!reply) return null;
-  const summary = reply.kind === "deleted" ? "Deleted message" : reply.content || (reply.kind === "image" ? "Photo" : "Message");
+  const summary = reply.kind === "deleted" ? "Deleted message" : reply.content || (reply.kind === "image" ? "Photo" : reply.kind === "video" ? "Video" : "Message");
   return (
     <div className={composing ? "composer-reply" : "message-reply-quote"}>
       <Reply size={15} />
-      <span><strong>{reply.sender_name}</strong><small>{reply.kind === "image" && <Image size={12} />}{summary}</small></span>
+      <span><strong>{reply.sender_name}</strong><small>{reply.kind === "image" && <Image size={12} />}{reply.kind === "video" && <Video size={12} />}{summary}</small></span>
       {onClose && <button type="button" onClick={onClose} aria-label="Cancel reply"><X size={17} /></button>}
     </div>
   );
@@ -80,7 +80,7 @@ export function ForwardModal({ message, scope, onClose, onDone }) {
   return (
     <Modal title="Forward message" onClose={onClose}>
       <div className="modal-body forward-modal-body">
-        <div className="forward-preview"><Forward size={16} /><span>{message.kind === "image" ? "Photo" : message.content}</span></div>
+        <div className="forward-preview"><Forward size={16} /><span>{message.kind === "image" ? "Photo" : message.kind === "video" ? "Video" : message.content}</span></div>
         {loading ? <div className="forward-loading"><LoaderCircle className="spin" />Loading destinations…</div> : connections.length + groups.length === 0 ? <EmptyState icon={Forward} title="Nowhere to forward" detail="Add a connection or join a group first." /> : <div className="forward-destinations">
           {connections.length > 0 && <><h3>Connections</h3>{connections.map((contact) => <button type="button" key={contact.public_id} disabled={Boolean(busyTarget)} onClick={() => forwardTo("private", contact.public_id, contact.name)}><Avatar name={contact.name} src={contact.avatar_url} size="small" /><span><strong>{contact.name}</strong><small>@{contact.username}</small></span>{busyTarget === `private:${contact.public_id}` ? <LoaderCircle className="spin" size={17} /> : <Forward size={16} />}</button>)}</>}
           {groups.length > 0 && <><h3>Groups</h3>{groups.map((group) => <button type="button" key={group.public_id} disabled={Boolean(busyTarget)} onClick={() => forwardTo("group", group.public_id, group.name)}><span className="group-avatar small"><UsersRound size={16} /></span><span><strong>{group.name}</strong><small>{group.member_count} members</small></span>{busyTarget === `group:${group.public_id}` ? <LoaderCircle className="spin" size={17} /> : <Forward size={16} />}</button>)}</>}

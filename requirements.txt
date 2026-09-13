@@ -4,3 +4,6 @@ SQLAlchemy==2.0.43
 psycopg[binary]==3.2.9
 pydantic==2.11.7
 python-multipart==0.0.20
+boto3==1.40.40
+cryptography==46.0.1
+argon2-cffi==25.1.0
