@@ -123,6 +123,8 @@ APP_ENV=production
 AWS_REGION=ap-south-1
 
 DATABASE_SECRET_ID=<FULL_RDS_DATABASE_SECRET_ARN>
+DB_HOST=<RDS_ENDPOINT_WITHOUT_PORT>
+DB_PORT=5432
 DB_NAME=lan_chat
 RDS_CA_BUNDLE=/etc/pki/ca-trust/source/anchors/global-bundle.pem
 
@@ -155,6 +157,8 @@ Important details:
 - Do not add port 80 to either value when using the normal ALB HTTP listener.
 - `DATABASE_SECRET_ID` may be a secret name, but the full ARN is clearer and is
   recommended.
+- `DB_HOST` is the RDS endpoint only, without `https://` or `:5432`.
+- `DB_PORT` can remain `5432` unless the RDS instance uses a custom port.
 - Leave `S3_KMS_KEY_ID` blank for SSE-S3. If the existing bucket uses a
   customer-managed KMS key, set its ID/ARN and keep the required KMS permissions
   on both the EC2 role and key policy.

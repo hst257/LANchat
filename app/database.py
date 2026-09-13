@@ -16,19 +16,22 @@ def database_url():
     secret_id = os.getenv("DATABASE_SECRET_ID", "").strip()
     if secret_id:
         secret = settings.get_secret_object(secret_id)
-        required = ["username", "password", "host"]
+        required = ["username", "password"]
         missing = [name for name in required if not secret.get(name)]
         if missing:
             raise RuntimeError(
                 "Database secret is missing: " + ", ".join(missing)
             )
+        db_host = os.getenv("DB_HOST", "").strip()
+        if not db_host:
+            raise RuntimeError("DB_HOST is required when DATABASE_SECRET_ID is used")
         return URL.create(
             "postgresql+psycopg",
             username=secret["username"],
             password=secret["password"],
-            host=secret["host"],
-            port=int(secret.get("port", 5432)),
-            database=secret.get("dbname") or os.getenv("DB_NAME", "lan_chat"),
+            host=db_host,
+            port=int(os.getenv("DB_PORT", "5432")),
+            database=os.getenv("DB_NAME", "lan_chat"),
             query={
                 "sslmode": "verify-full",
                 "sslrootcert": os.getenv(
