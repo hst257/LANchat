@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: lan_chat
+      POSTGRES_USER: lan_chat
+      POSTGRES_PASSWORD: lan_chat
+    ports:
+      # Port 5433 avoids collisions with a PostgreSQL service already using 5432.
+      - "5433:5432"
+    volumes:
+      - lan_chat_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lan_chat -d lan_chat"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  lan_chat_postgres:

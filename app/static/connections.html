@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LAN Chat · Connections</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <main class="app-shell">
+    <header class="topbar">
+      <div class="identity"><h1 id="welcome">Connections</h1><p>Your ID: <span class="public-id" id="my-id">…</span></p></div>
+      <button class="secondary" id="logout" type="button">Sign out</button>
+    </header>
+
+    <p id="page-notice" class="notice" hidden></p>
+    <div class="content-grid">
+      <section class="panel">
+        <header class="panel-header"><h2>Your connections</h2><span class="count" id="connection-count">0</span></header>
+        <div class="list" id="connections-list"><p class="empty">Loading…</p></div>
+      </section>
+
+      <div style="display:grid;gap:20px;align-content:start">
+        <section class="panel">
+          <header class="panel-header"><h2>Add connection</h2></header>
+          <div class="search-area">
+            <form class="search-row" id="search-form">
+              <input id="search-id" aria-label="Public user ID" placeholder="CHAT-12AB34CD" minlength="3" maxlength="20" required>
+              <button type="submit">Search</button>
+            </form>
+            <div id="search-result"></div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <header class="panel-header"><h2>Pending requests</h2><span class="count" id="request-count">0</span></header>
+          <div class="list" id="requests-list"><p class="empty">Loading…</p></div>
+        </section>
+      </div>
+    </div>
+  </main>
+  <script src="/static/common.js"></script>
+  <script>
+    let currentUser;
+    let connections = [];
+    const connectionList = document.querySelector("#connections-list");
+    const requestsList = document.querySelector("#requests-list");
+    const pageNotice = document.querySelector("#page-notice");
+
+    const avatarText = (name) => name.trim().slice(0, 1) || "?";
+
+    const renderConnections = () => {
+      connectionList.replaceChildren();
+      document.querySelector("#connection-count").textContent = connections.length;
+      if (!connections.length) {
+        const empty = document.createElement("p");
+        empty.className = "empty";
+        empty.textContent = "No connections yet. Search for someone by their public ID.";
+        connectionList.append(empty);
+        return;
+      }
+      connections.forEach((contact) => {
+        const link = document.createElement("a");
+        link.className = "list-item clickable";
+        link.href = `/chat?id=${encodeURIComponent(contact.public_id)}`;
+        const avatar = document.createElement("div");
+        avatar.className = "avatar";
+        avatar.textContent = avatarText(contact.name);
+        const main = document.createElement("div");
+        main.className = "item-main";
+        const name = document.createElement("strong");
+        name.textContent = contact.name;
+        const id = document.createElement("small");
+        id.textContent = contact.public_id;
+        main.append(name, id);
+        const status = document.createElement("span");
+        status.className = `status${contact.online ? " online" : ""}`;
+        status.textContent = contact.online ? "Online" : "Offline";
+        link.append(avatar, main, status);
+        connectionList.append(link);
+      });
+    };
+
+    const loadConnections = async () => {
+      connections = (await api("/api/connections")).connections;
+      renderConnections();
+    };
+
+    const respond = async (id, action) => {
+      try {
+        await api(`/api/requests/${id}/respond`, { method: "POST", body: JSON.stringify({ action }) });
+        await Promise.all([loadRequests(), loadConnections()]);
+      } catch (error) { showNotice(pageNotice, error.message); }
+    };
+
+    const loadRequests = async () => {
+      const requests = (await api("/api/requests/incoming")).requests;
+      requestsList.replaceChildren();
+      document.querySelector("#request-count").textContent = requests.length;
+      if (!requests.length) {
+        const empty = document.createElement("p");
+        empty.className = "empty";
+        empty.textContent = "No pending requests.";
+        requestsList.append(empty);
+        return;
+      }
+      requests.forEach((request) => {
+        const row = document.createElement("div");
+        row.className = "list-item";
+        const avatar = document.createElement("div");
+        avatar.className = "avatar";
+        avatar.textContent = avatarText(request.sender.name);
+        const main = document.createElement("div");
+        main.className = "item-main";
+        const name = document.createElement("strong");
+        name.textContent = request.sender.name;
+        const id = document.createElement("small");
+        id.textContent = request.sender.public_id;
+        main.append(name, id);
+        const actions = document.createElement("div");
+        actions.className = "request-actions";
+        const accept = document.createElement("button");
+        accept.textContent = "Accept";
+        accept.addEventListener("click", () => respond(request.id, "accept"));
+        const reject = document.createElement("button");
+        reject.className = "danger";
+        reject.textContent = "Reject";
+        reject.addEventListener("click", () => respond(request.id, "reject"));
+        actions.append(accept, reject);
+        row.append(avatar, main, actions);
+        requestsList.append(row);
+      });
+    };
+
+    const renderSearchResult = (user) => {
+      const host = document.querySelector("#search-result");
+      host.replaceChildren();
+      if (!user) {
+        const p = document.createElement("p");
+        p.className = "empty";
+        p.textContent = "No user found with that ID.";
+        host.append(p);
+        return;
+      }
+      const row = document.createElement("div");
+      row.className = "list-item search-result";
+      const main = document.createElement("div");
+      main.className = "item-main";
+      const name = document.createElement("strong");
+      name.textContent = user.name;
+      const id = document.createElement("small");
+      id.textContent = user.public_id;
+      main.append(name, id);
+      const button = document.createElement("button");
+      const labels = { connected: "Connected", sent: "Sent", incoming: "Incoming" };
+      button.textContent = labels[user.relationship] || "Connect";
+      button.disabled = user.relationship !== "none";
+      button.addEventListener("click", async () => {
+        button.disabled = true;
+        try {
+          await api("/api/requests", { method: "POST", body: JSON.stringify({ public_id: user.public_id }) });
+          button.textContent = "Sent";
+          showNotice(pageNotice, "Connection request sent.", "success");
+        } catch (error) {
+          button.disabled = false;
+          showNotice(pageNotice, error.message);
+        }
+      });
+      row.append(main, button);
+      host.append(row);
+    };
+
+    document.querySelector("#search-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      try {
+        const id = document.querySelector("#search-id").value.trim();
+        renderSearchResult((await api(`/api/users/search?q=${encodeURIComponent(id)}`)).user);
+      } catch (error) { showNotice(pageNotice, error.message); }
+    });
+
+    document.querySelector("#logout").addEventListener("click", async () => {
+      await api("/api/logout", { method: "POST" });
+      location.href = "/login";
+    });
+
+    openSocket((event) => {
+      if (event.type === "presence") {
+        const contact = connections.find((item) => item.public_id === event.public_id);
+        if (contact) { contact.online = event.online; renderConnections(); }
+      } else if (["connection_request", "connections_changed"].includes(event.type)) {
+        Promise.all([loadRequests(), loadConnections()]);
+      }
+    });
+
+    (async () => {
+      try {
+        currentUser = (await api("/api/me")).user;
+        document.querySelector("#welcome").textContent = `Hi, ${currentUser.name}`;
+        document.querySelector("#my-id").textContent = currentUser.public_id;
+        await Promise.all([loadConnections(), loadRequests()]);
+      } catch (error) { if (error.message !== "Please sign in again") showNotice(pageNotice, error.message); }
+    })();
+  </script>
+</body>
+</html>
+

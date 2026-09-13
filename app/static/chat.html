@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LAN Chat · Chat</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <main class="chat-shell">
+    <section class="chat-card">
+      <header class="chat-header">
+        <a class="back-link" href="/connections" aria-label="Back to connections">‹</a>
+        <div class="avatar" id="contact-avatar">?</div>
+        <div class="item-main"><strong id="contact-name">Loading…</strong><small><span class="status" id="contact-status">Offline</span></small></div>
+      </header>
+      <div class="messages" id="messages"><p class="empty">Loading messages…</p></div>
+      <p id="chat-notice" class="notice" hidden></p>
+      <form class="chat-form" id="message-form">
+        <input id="message-input" maxlength="4000" autocomplete="off" placeholder="Type a message" aria-label="Message" required>
+        <button type="submit">Send</button>
+      </form>
+    </section>
+  </main>
+  <script src="/static/common.js"></script>
+  <script>
+    const contactId = new URLSearchParams(location.search).get("id")?.toUpperCase();
+    const messagesHost = document.querySelector("#messages");
+    const notice = document.querySelector("#chat-notice");
+    const input = document.querySelector("#message-input");
+    const seenMessages = new Set();
+    let me;
+    let contact;
+
+    const setPresence = (online) => {
+      const status = document.querySelector("#contact-status");
+      status.className = `status${online ? " online" : ""}`;
+      status.textContent = online ? "Online" : "Offline";
+    };
+
+    const appendMessage = (message, shouldScroll = true) => {
+      if (seenMessages.has(message.id)) return;
+      seenMessages.add(message.id);
+      messagesHost.querySelector(".empty")?.remove();
+      const bubble = document.createElement("article");
+      bubble.className = `bubble${message.sender_id === me.public_id ? " mine" : ""}`;
+      const text = document.createElement("p");
+      text.textContent = message.content;
+      const time = document.createElement("time");
+      time.dateTime = message.created_at;
+      time.textContent = formatTime(message.created_at);
+      bubble.append(text, time);
+      messagesHost.append(bubble);
+      if (shouldScroll) messagesHost.scrollTop = messagesHost.scrollHeight;
+    };
+
+    const socket = openSocket((event) => {
+      if (event.type === "message" && contact &&
+          [event.message.sender_id, event.message.receiver_id].includes(contact.public_id) &&
+          [event.message.sender_id, event.message.receiver_id].includes(me.public_id)) {
+        appendMessage(event.message);
+      } else if (event.type === "presence" && contact && event.public_id === contact.public_id) {
+        contact.online = event.online;
+        setPresence(event.online);
+      } else if (event.type === "error") {
+        showNotice(notice, event.detail);
+      }
+    });
+
+    document.querySelector("#message-form").addEventListener("submit", (event) => {
+      event.preventDefault();
+      const content = input.value.trim();
+      if (!content) return;
+      if (!socket.send({ type: "message", recipient_id: contactId, content })) {
+        showNotice(notice, "Connecting to the server. Please try again in a moment.");
+        return;
+      }
+      input.value = "";
+      input.focus();
+      showNotice(notice, "");
+    });
+
+    (async () => {
+      if (!contactId) { location.href = "/connections"; return; }
+      try {
+        me = (await api("/api/me")).user;
+        const data = await api(`/api/chats/${encodeURIComponent(contactId)}/messages`);
+        contact = data.contact;
+        document.title = `${contact.name} · LAN Chat`;
+        document.querySelector("#contact-name").textContent = contact.name;
+        document.querySelector("#contact-avatar").textContent = contact.name.trim().slice(0, 1) || "?";
+        setPresence(contact.online);
+        messagesHost.replaceChildren();
+        if (!data.messages.length) {
+          const empty = document.createElement("p");
+          empty.className = "empty";
+          empty.textContent = `This is the start of your chat with ${contact.name}.`;
+          messagesHost.append(empty);
+        } else {
+          data.messages.forEach((message) => appendMessage(message, false));
+          messagesHost.scrollTop = messagesHost.scrollHeight;
+        }
+        input.focus();
+      } catch (error) {
+        showNotice(notice, error.message);
+        document.querySelector("#message-form").hidden = true;
+      }
+    })();
+  </script>
+</body>
+</html>

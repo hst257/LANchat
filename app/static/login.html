@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LAN Chat · Login</title>
+  <link rel="stylesheet" href="/static/styles.css?v=2">
+</head>
+<body>
+  <main class="auth-shell">
+    <section class="auth-card">
+      <div class="brand">
+        <div class="brand-mark">✦</div>
+        <div><h1>LAN Chat</h1><p>Private chat on your local network</p></div>
+      </div>
+
+      <div class="tabs" role="tablist">
+        <button class="tab active" id="login-tab" type="button" role="tab" aria-selected="true" aria-controls="login-form">Login</button>
+        <button class="tab" id="register-tab" type="button" role="tab" aria-selected="false" aria-controls="register-form">Sign up</button>
+      </div>
+
+      <form class="form-stack auth-form active" id="login-form" style="display:grid" aria-hidden="false">
+        <label>Username <input name="username" autocomplete="username" required></label>
+        <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
+        <button type="submit">Login</button>
+      </form>
+
+      <form class="form-stack auth-form" id="register-form" style="display:none" hidden aria-hidden="true">
+        <label>Display name <input name="name" maxlength="80" autocomplete="name" required></label>
+        <label>Username <input name="username" minlength="3" maxlength="50" pattern="[A-Za-z0-9_.-]+" autocomplete="username" required></label>
+        <label>Password <input name="password" type="password" minlength="8" maxlength="128" autocomplete="new-password" required></label>
+        <p class="helper">Use at least 8 characters. Your public chat ID is created automatically.</p>
+        <button type="submit">Create account</button>
+      </form>
+      <p id="notice" class="notice" hidden></p>
+    </section>
+  </main>
+  <script src="/static/common.js"></script>
+  <script>
+    const loginTab = document.querySelector("#login-tab");
+    const registerTab = document.querySelector("#register-tab");
+    const loginForm = document.querySelector("#login-form");
+    const registerForm = document.querySelector("#register-form");
+    const notice = document.querySelector("#notice");
+
+    const showForm = (mode) => {
+      const registering = mode === "register";
+      loginForm.hidden = registering;
+      registerForm.hidden = !registering;
+      loginForm.style.display = registering ? "none" : "grid";
+      registerForm.style.display = registering ? "grid" : "none";
+      loginForm.classList.toggle("active", !registering);
+      registerForm.classList.toggle("active", registering);
+      loginForm.setAttribute("aria-hidden", String(registering));
+      registerForm.setAttribute("aria-hidden", String(!registering));
+      loginTab.classList.toggle("active", !registering);
+      registerTab.classList.toggle("active", registering);
+      loginTab.setAttribute("aria-selected", String(!registering));
+      registerTab.setAttribute("aria-selected", String(registering));
+      showNotice(notice, "");
+    };
+    loginTab.addEventListener("click", () => showForm("login"));
+    registerTab.addEventListener("click", () => showForm("register"));
+    showForm("login");
+
+    loginForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const button = loginForm.querySelector("button");
+      button.disabled = true;
+      try {
+        await api("/api/login", { method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(loginForm))) });
+        location.href = "/connections";
+      } catch (error) {
+        showNotice(notice, error.message);
+      } finally { button.disabled = false; }
+    });
+
+    registerForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const button = registerForm.querySelector("button");
+      button.disabled = true;
+      try {
+        await api("/api/register", { method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(registerForm))) });
+        location.href = "/connections";
+      } catch (error) {
+        showNotice(notice, error.message);
+      } finally { button.disabled = false; }
+    });
+
+    api("/api/me").then(() => { location.href = "/connections"; }).catch(() => {});
+  </script>
+</body>
+</html>
