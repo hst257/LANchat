@@ -5,10 +5,7 @@
       "Sid": "ReadApplicationSecrets",
       "Effect": "Allow",
       "Action": "secretsmanager:GetSecretValue",
-      "Resource": [
-        "<DATABASE_SECRET_ARN>",
-        "<CLOUDFRONT_PRIVATE_KEY_SECRET_ARN>"
-      ]
+      "Resource": "<DATABASE_SECRET_ARN>"
     },
     {
       "Sid": "ManagePrivateChatMedia",

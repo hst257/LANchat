@@ -1,8 +1,8 @@
 import secrets
-from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
-from urllib.parse import quote
+
+from botocore.config import Config
 
 from . import settings
 
@@ -11,7 +11,11 @@ from . import settings
 def _s3_client():
     import boto3
 
-    return boto3.client("s3", region_name=settings.AWS_REGION)
+    return boto3.client(
+        "s3",
+        region_name=settings.AWS_REGION,
+        config=Config(signature_version="s3v4"),
+    )
 
 
 def _object_key(prefix: str, extension: str) -> str:
@@ -88,29 +92,11 @@ def copy_media(
     return target_key
 
 
-@lru_cache(maxsize=1)
-def _cloudfront_signer():
-    from botocore.signers import CloudFrontSigner
-    from cryptography.hazmat.primitives import hashes, serialization
-    from cryptography.hazmat.primitives.asymmetric import padding
-
-    key = serialization.load_pem_private_key(
-        settings.cloudfront_private_key().encode("utf-8"), password=None
-    )
-
-    def rsa_signer(message: bytes) -> bytes:
-        return key.sign(message, padding.PKCS1v15(), hashes.SHA1())
-
-    return CloudFrontSigner(settings.CLOUDFRONT_PUBLIC_KEY_ID, rsa_signer)
-
-
 def delivery_url(key: str) -> str:
     if settings.MEDIA_BACKEND != "s3":
-        raise RuntimeError("CloudFront delivery URLs are only used with S3 storage")
-    unsigned = f"https://{settings.CLOUDFRONT_DOMAIN}/{quote(key, safe='/')}"
-    expires = datetime.now(timezone.utc) + timedelta(
-        seconds=settings.CLOUDFRONT_URL_TTL_SECONDS
-    )
-    return _cloudfront_signer().generate_presigned_url(
-        unsigned, date_less_than=expires
+        raise RuntimeError("Presigned delivery URLs are only used with S3 storage")
+    return _s3_client().generate_presigned_url(
+        "get_object",
+        Params={"Bucket": settings.S3_BUCKET, "Key": key},
+        ExpiresIn=settings.S3_PRESIGNED_URL_TTL_SECONDS,
     )

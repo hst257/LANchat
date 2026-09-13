@@ -80,10 +80,11 @@ Requirements: Python 3.11+, Node.js 20+, Docker Desktop (or an existing PostgreS
 
 ## AWS production deployment
 
-The production configuration uses an HTTPS Application Load Balancer, EC2,
-private RDS PostgreSQL, private S3 media storage, CloudFront signed URLs, IAM
-roles, and Secrets Manager. Follow [AWS_DEPLOYMENT.md](AWS_DEPLOYMENT.md) for the
-complete console selections and Amazon Linux commands.
+The university-prototype AWS configuration uses an HTTP Application Load
+Balancer, EC2, private RDS PostgreSQL, private S3 media storage with short-lived
+presigned URLs, an IAM role, and Secrets Manager. It requires no custom domain or
+CloudFront distribution. Follow [AWS_DEPLOYMENT.md](AWS_DEPLOYMENT.md) for the
+exact settings and Amazon Linux update commands.
 
 ## Notes for local LAN mode
 

@@ -521,6 +521,10 @@ def test_s3_storage_uses_role_client_and_server_side_encryption(tmp_path, monkey
         def delete_object(self, **kwargs):
             self.calls.append(("delete", kwargs))
 
+        def generate_presigned_url(self, method, **kwargs):
+            self.calls.append(("presign", {"method": method, **kwargs}))
+            return "https://private-chat-media.s3.ap-south-1.amazonaws.com/signed"
+
     fake = FakeS3()
     monkeypatch.setattr(storage.settings, "MEDIA_BACKEND", "s3")
     monkeypatch.setattr(storage.settings, "S3_BUCKET", "private-chat-media")
@@ -530,6 +534,7 @@ def test_s3_storage_uses_role_client_and_server_side_encryption(tmp_path, monkey
     key = storage.put_media(b"image", ".png", "image/png", "messages", tmp_path)
     copied = storage.copy_media(key, "image/png", "group-messages", tmp_path)
     storage.delete_media(copied, tmp_path)
+    url = storage.delivery_url(key)
 
     assert key.startswith("messages/")
     assert copied.startswith("group-messages/")
@@ -539,3 +544,36 @@ def test_s3_storage_uses_role_client_and_server_side_encryption(tmp_path, monkey
         "Key": key,
     }
     assert fake.calls[2][1] == {"Bucket": "private-chat-media", "Key": copied}
+    assert url.startswith("https://private-chat-media.s3.")
+    assert fake.calls[3] == (
+        "presign",
+        {
+            "method": "get_object",
+            "Params": {"Bucket": "private-chat-media", "Key": key},
+            "ExpiresIn": storage.settings.S3_PRESIGNED_URL_TTL_SECONDS,
+        },
+    )
+
+
+def test_http_prototype_production_settings_and_websocket_origin(monkeypatch):
+    settings = importlib.import_module("app.settings")
+    security = importlib.import_module("app.security")
+    monkeypatch.setattr(settings, "IS_PRODUCTION", True)
+    monkeypatch.setattr(settings, "FORCE_HTTPS", False)
+    monkeypatch.setattr(settings, "COOKIE_SECURE", False)
+    monkeypatch.setattr(settings, "ALLOWED_HOSTS", ["chat-alb.example.elb.amazonaws.com"])
+    monkeypatch.setattr(
+        settings,
+        "ALLOWED_ORIGINS",
+        ["http://chat-alb.example.elb.amazonaws.com"],
+    )
+    monkeypatch.setattr(settings, "MEDIA_BACKEND", "s3")
+    monkeypatch.setattr(settings, "S3_BUCKET", "private-chat-media")
+    monkeypatch.setattr(settings, "S3_PRESIGNED_URL_TTL_SECONDS", 900)
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+
+    settings.validate_production_settings()
+    assert security.websocket_origin_allowed(
+        "http://chat-alb.example.elb.amazonaws.com"
+    )
+    assert not security.websocket_origin_allowed("http://different.example.com")

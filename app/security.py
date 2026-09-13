@@ -60,8 +60,16 @@ class SecurityMiddleware(BaseHTTPMiddleware):
 
 def _content_security_policy() -> str:
     media_hosts = ""
-    if settings.CLOUDFRONT_DOMAIN:
-        media_hosts = f" https://{settings.CLOUDFRONT_DOMAIN}"
+    if settings.MEDIA_BACKEND == "s3" and settings.S3_BUCKET:
+        media_hosts = " ".join(
+            [
+                f"https://{settings.S3_BUCKET}.s3.{settings.AWS_REGION}.amazonaws.com",
+                f"https://{settings.S3_BUCKET}.s3.amazonaws.com",
+                f"https://s3.{settings.AWS_REGION}.amazonaws.com",
+                "https://s3.amazonaws.com",
+            ]
+        )
+        media_hosts = f" {media_hosts}"
     return "; ".join(
         [
             "default-src 'self'",
@@ -94,4 +102,5 @@ def websocket_origin_allowed(origin: str | None) -> bool:
         return True
     if not origin or origin not in settings.ALLOWED_ORIGINS:
         return False
-    return urlsplit(origin).scheme == "https"
+    scheme = urlsplit(origin).scheme
+    return scheme == "https" if settings.FORCE_HTTPS else scheme in {"http", "https"}
